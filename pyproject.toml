@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pramana"
+version = "0.1.0"
+description = "Quantum digital signature protocol assurance testbed"
+requires-python = ">=3.12"
+
+# Versions are pinned exactly, not bounded. A hackathon demo breaking because a
+# transitive dependency shipped a release that morning is an avoidable and
+# infuriating failure (build plan, Part 5). Every pin below is a version that
+# scripts/verify_env.py has actually exercised on this machine.
+dependencies = [
+    "stim==1.16.0",
+    "qiskit==2.5.2",
+    "qiskit-aer==0.17.2",
+    "numpy==2.5.2",
+    "scipy==1.18.1",
+    "pydantic==2.13.5",
+    "pyyaml==6.0.3",
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.4",
+    "sqlalchemy==2.0.52",
+]
+
+# SymPy is deliberately absent. Layer 2c represents Pauli operators in the
+# symplectic (x, z) bit-vector form and decides commutation by a symplectic inner
+# product mod 2 -- exact integer arithmetic, no computer algebra system required.
+
+[project.optional-dependencies]
+# Native build required. The bridge layer degrades gracefully when it is absent:
+# import guarded, feature flag off, tests skipped with a stated reason.
+# NOTE: importing `oqs` triggers a git clone and cmake build of the liboqs C
+# library at import time. See scripts/verify_env.py::check_pqc.
+pqc = ["liboqs-python==0.16.0"]
+
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "ruff==0.16.6",
+    "mypy==2.3.1",
+    "hypothesis==6.167.1",
+    # Required by starlette 1.6.0's TestClient (Layer 9 API tests).
+    "httpx2==2.12.0",
+    "pre-commit",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "regression: published-attack reproduction suite (CI job 3)",
+    "integration: end-to-end pipeline tests",
+    "slow: long Monte Carlo runs, nightly only",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "ANN", "D"]
+ignore = [
+    "D203",  # conflicts with D211
+    "D213",  # conflicts with D212
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests document intent in their names and docstrings; annotating every fixture
+# adds noise without adding safety.
+"tests/*" = ["ANN"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# Neither ships type stubs.
+module = ["stim.*", "qiskit_aer.*"]
+ignore_missing_imports = true

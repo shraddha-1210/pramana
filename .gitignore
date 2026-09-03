@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Project
+*.sqlite
+*.db
+docs/
+docs/benchmarks/*.json
+!docs/benchmarks/.gitkeep
+
+# Node
+node_modules/
+frontend/dist/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
