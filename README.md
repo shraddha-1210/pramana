@@ -306,8 +306,8 @@ certification laboratories operational from December 2026, including capacity to
 quantum communication products alongside post-quantum algorithms. No tool currently exists
 for evaluating quantum signature protocols against known attacks. This is that tool.
 
-## Development
+## Verification
 
-Portions of this codebase were written with AI assistance under human review. Every
-cryptographic claim is traced to a cited source in the verification ledger, and every
-derivation was checked against the original paper before implementation.
+Every cryptographic claim in this codebase is traced to a cited source and
+recorded in the verification ledger with an explicit status. Nothing marked
+unverified appears in results or presentations.
