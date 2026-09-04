@@ -20,6 +20,9 @@ from pathlib import Path
 # Assembled rather than written literally so this file does not trip its own check.
 MARKER = "CITATION" + " NEEDED"
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ALLOWLIST = REPO_ROOT / "docs" / "references.md"
+
 # Files that legitimately discuss the marker rather than carrying an unresolved one.
 SELF_REFERENTIAL = {
     Path("scripts/check_citations.py"),
@@ -44,8 +47,33 @@ def scan(paths: list[Path]) -> list[tuple[Path, int, str]]:
     return hits
 
 
+def allowlist_missing_message() -> str | None:
+    """Return an explanatory error if the citation allowlist is absent, else None.
+
+    ``docs/`` is gitignored and local-only until submission, so a fresh clone has
+    no ``docs/references.md``. Rule 2 cannot be enforced without it: there is no
+    list to check a citation against. Failing loudly here is the honest outcome --
+    passing silently would mean the hook reports "no unresolved citations" on a
+    checkout where it is structurally incapable of finding one.
+    """
+    if ALLOWLIST.is_file():
+        return None
+    return (
+        f"Citation allowlist not found at {ALLOWLIST}.\n\n"
+        "docs/ is gitignored and kept local until submission, so a fresh clone "
+        "does not carry it. Rule 2 cannot be enforced without the allowlist, and "
+        "this hook will not pass by pretending otherwise.\n\n"
+        "Obtain docs/ from the team's local copy before committing."
+    )
+
+
 def main(argv: list[str]) -> int:
-    """Report every marker found in ``argv``. Returns 1 if any was found."""
+    """Report every marker found in ``argv``. Returns non-zero on any problem."""
+    problem = allowlist_missing_message()
+    if problem is not None:
+        print(problem)
+        return 2
+
     hits = scan([Path(a) for a in argv])
     if not hits:
         return 0

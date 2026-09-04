@@ -1,0 +1,75 @@
+# ZERO PAULI WITNESSES. STILL FORGEABLE. NOT SECURE.
+#
+# The name is deliberate and load-bearing. This scheme has no witness in the
+# Choi-class Pauli-commutant search: S*H permutes the three Pauli axes as a
+# 3-cycle (X -> Z -> Y -> X), fixing none, and a witness must be a Pauli fixed up
+# to sign. Exactly 8 of the 24 elements of C_1/U(1) qualify.
+#
+# That does NOT make it secure, and an earlier draft of this file was named
+# witness_free_aqs, which overstated it. Kim, Lee & Lee (arXiv:1708.05111) settle
+# the question two ways:
+#
+#   Theorem 4: a forgeable message exists iff alpha_l*beta_m*gamma_n = 0 for some
+#     distinct l,m,n. Normalising S*H to SU(2) gives w = (1/2, 1/2, -1/2, 1/2), so
+#     alpha_l = 1/4 + 1/4 - 1/2 = 0 for every l. S*H is in W_123. Forgeable.
+#
+#   Theorem 1: with only two random rotations a forgeable message exists for ANY
+#     assistant unitary. This scheme uses R_0 = sigma_x, R_1 = sigma_z -- two.
+#     So it is forgeable regardless of which assistant unitary is chosen.
+#
+# Every element of the 24-element Clifford group is forgeable under Theorem 4
+# (verified by enumeration, no counterexample). A forgery-free assistant unitary
+# is therefore necessarily non-Clifford, and outside what Stim can simulate.
+#
+# See docs/derivations.md section 5.3a and ledger rows V-19, V-22, V-26, V-27.
+
+name: pauli_witness_free_aqs
+reference: >-
+  Derived by this project from the fixed-point-free argument in
+  docs/derivations.md section 5.3a (ledger V-19). NOT from Choi, Chang, Hong
+  (2011) and not from any other publication. It eliminates every Pauli witness of
+  the Choi-class attack and nothing more: Kim, Lee, Lee, arXiv:1708.05111,
+  Theorem 4 places S*H in W_123, and their Theorem 1 makes any two-rotation scheme
+  forgeable irrespective of the assistant unitary. This scheme is NOT secure and
+  must never be presented as such.
+
+message_type: classical
+
+entanglement:
+  resource: bell
+  pairs_per_signature_qubit: 1
+
+signature:
+  length_qubits: 8
+
+rotation:
+  family: pauli
+  left_factor: [I]
+  right_factor: [I]
+
+# (I, S*H)-type. Factors compose left to right: [S, H] denotes the product S*H.
+signing_encryption:
+  family: uv_type
+  left_factor: [I]
+  right_factor: [S, H]
+
+classical_outcomes:
+  used_in_verification: false
+  protection: wegman_carter
+
+binding:
+  positional: true
+
+arbitrator:
+  count: 1
+  threshold: 1
+  trust: semi_trusted
+
+probes:
+  enabled: true
+  basis_set: six_state
+  rounds_per_signature: 32
+
+verification:
+  correction_rule: pauli_standard
+  equality_test: projective

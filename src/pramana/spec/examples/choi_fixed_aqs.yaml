@@ -1,0 +1,64 @@
+# The scheme with Choi's published fix applied.
+#
+# This scheme STILL FIRES. D1 finds one surviving witness, Q = Y, because
+# H Y H = -Y: Y anticommutes with the Hadamard assistant operation, and
+# anticommutation is commutation up to the global phase -1, which is the exact
+# notion Choi's own attack criterion uses.
+#
+# That is the finding, not a bug, and it must not be quietly repaired by
+# substituting a different factor under the paper's name. See
+# docs/derivations.md section 5.3a and ledger rows V-05 (DISPUTED) and V-18.
+#
+# The gap is published, not ours: Zhang et al. (2013) are credited with showing
+# (I,H)-type encryption still insecure against improved receiver forgery.
+
+name: choi_fixed_aqs
+reference: >-
+  Choi, Chang, Hong, Phys. Rev. A 84, 062330 (2011), section III B: Pauli random
+  rotation plus (I,H)-type quantum encryption, the fix proposed in that paper.
+  Only the signing_encryption block is Choi's. The Wegman-Carter protection of
+  M_A, the positional binding and the projective equality test are additions by
+  this project and are not part of the published fix.
+
+message_type: classical
+
+entanglement:
+  resource: bell
+  pairs_per_signature_qubit: 1
+
+signature:
+  length_qubits: 8
+
+rotation:
+  family: pauli
+  left_factor: [I]
+  right_factor: [I]
+
+# (I,H)-type: U = I, V = H. Choi's assistant Hadamard.
+signing_encryption:
+  family: uv_type
+  left_factor: [I]
+  right_factor: [H]
+
+# Wegman-Carter closes the M_A malleability of Choi section III A (ours, not the
+# paper's -- see docs/derivations.md section 5.5).
+classical_outcomes:
+  used_in_verification: false
+  protection: wegman_carter
+
+binding:
+  positional: true
+
+arbitrator:
+  count: 1
+  threshold: 1
+  trust: semi_trusted
+
+probes:
+  enabled: true
+  basis_set: six_state
+  rounds_per_signature: 32
+
+verification:
+  correction_rule: pauli_standard
+  equality_test: projective

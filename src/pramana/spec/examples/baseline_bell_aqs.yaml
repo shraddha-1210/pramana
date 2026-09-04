@@ -1,0 +1,59 @@
+# The scheme as published, with no repair applied.
+#
+# Every operator in the signing path is a Pauli, so every non-identity Pauli is a
+# valid forging operator. D1 finds three witnesses [X, Y, Z] and fires.
+# See docs/derivations.md 5.1-5.3.
+
+name: baseline_bell_aqs
+reference: >-
+  Li, Chan, Long, Phys. Rev. A 79, 054307 (2009), the Bell-state variant of the
+  Zeng-Keitel scheme (Phys. Rev. A 65, 042312, 2002); attacked in Choi, Chang,
+  Hong, Phys. Rev. A 84, 062330 (2011), section III A. Choi attacks the GHZ-based
+  Zeng-Keitel scheme and asserts the attack transfers to this Bell-state variant;
+  that transfer is a modelling decision recorded as ledger row V-08, not a proven
+  equivalence.
+
+message_type: classical
+
+entanglement:
+  resource: bell
+  pairs_per_signature_qubit: 1
+
+signature:
+  length_qubits: 8
+
+# Pauli random rotation, R = sigma_x^a sigma_z^b (Choi section II, step B2).
+rotation:
+  family: pauli
+  left_factor: [I]
+  right_factor: [I]
+
+# Quantum one-time pad: plain Pauli encryption, no assistant operation.
+signing_encryption:
+  family: pauli
+  left_factor: [I]
+  right_factor: [I]
+
+# Trent's validity test is R|P> = |R>, which does not reference M_A, so this is
+# Choi attack variant 1: deterministic, success probability 1.
+# OTP protection is bit-flip malleable and provides no integrity (ledger V-07).
+classical_outcomes:
+  used_in_verification: false
+  protection: otp
+
+binding:
+  positional: false
+
+arbitrator:
+  count: 1
+  threshold: 1
+  trust: semi_trusted
+
+probes:
+  enabled: true
+  basis_set: six_state
+  rounds_per_signature: 32
+
+verification:
+  correction_rule: pauli_standard
+  equality_test: swap

@@ -44,6 +44,8 @@ dev = [
     "hypothesis==6.167.1",
     # Required by starlette 1.6.0's TestClient (Layer 9 API tests).
     "httpx2==2.12.0",
+    # Type stubs, so `mypy --strict` covers the YAML loader path.
+    "types-PyYAML==6.0.12.20260815",
     "pre-commit",
 ]
 
