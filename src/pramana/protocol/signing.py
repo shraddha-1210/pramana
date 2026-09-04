@@ -129,12 +129,25 @@ def _apply_inverse_clifford(sim: stim.TableauSimulator, name: str, qubit: int) -
         )
 
 
+def forged_bit(bit: int, forge: str | None) -> int:
+    """The message bit after a Pauli ``forge`` acts on |0>/|1>.
+
+    X and Y map |0> <-> |1> (Y up to a global phase, which is unobservable), so
+    they flip the classical bit. I and Z leave a computational-basis state
+    unchanged, so they forge nothing -- which is why the Choi attack on a
+    classical message must use X or Y.
+    """
+    return bit ^ 1 if forge in ("X", "Y") else bit
+
+
 def sign_and_verify_round(
     message_bits: tuple[int, ...],
     spec: SchemeSpec,
     seed: int,
     *,
     pair_start: int = 0,
+    forge: str | None = None,
+    override_corrections: tuple[str, ...] | None = None,
 ) -> tuple[SignedMessage, bool, tuple[int, ...]]:
     """Sign a classical message and immediately verify it.
 
@@ -154,6 +167,18 @@ def sign_and_verify_round(
         spec: The scheme specification.
         seed: Explicit seed for determinism (Rule 6).
         pair_start: Starting index for pair consumption.
+        forge: Optional Pauli the *receiver* applies to the signature qubit after
+            the correction and before decryption -- Choi section III A attack
+            variant 1. The claimed message is transformed to match, so
+            verification is comparing a modified message against a signature the
+            attacker never re-signed. This hook exists so the attack runs against
+            **this** verification code rather than a copy of it; a forgery
+            demonstrated against a reimplementation would prove nothing.
+        override_corrections: Pauli corrections to apply *instead of* the ones the
+            table dictates, one per position. Models an attacker who does not know
+            the Bell outcomes and guesses (blind forgery). The claimed message is
+            unchanged, because the attacker is trying to pass off the original
+            message with a fabricated correction string.
 
     Returns:
         ``(signed_message, accepted, mismatch_positions)``
@@ -237,6 +262,8 @@ def sign_and_verify_round(
         outcome = (m0, m1)
 
         correction = CORRECTION_TABLE[outcome]
+        if override_corrections is not None:
+            correction = override_corrections[pos]
         outcomes.append(outcome)
         corrections.append(correction)
 
@@ -245,6 +272,13 @@ def sign_and_verify_round(
         # 6. Apply the correction to the receiver's qubit.
         if correction != "I":
             _apply_clifford(sim, correction, RECEIVER_HALF)
+
+        # 6a. ATTACK HOOK. Choi section III A: the receiver applies a Pauli to the
+        # encrypted signature. If that Pauli commutes up to global phase with
+        # every encryption and rotation operator, steps 7-10 carry it through
+        # untouched and the receiver recovers the *modified* message.
+        if forge is not None and forge != "I":
+            _apply_clifford(sim, forge, RECEIVER_HALF)
 
         # 7. Undo the left factor U (apply U†).
         for op_name in reversed(left_factor):
@@ -271,7 +305,11 @@ def sign_and_verify_round(
         # 11. Check: does the receiver's qubit hold the original state?
         got = sim.peek_observable_expectation(stim.PauliString("__Z"))
         recovered_bit = 0 if got == +1 else 1
-        if recovered_bit != bit:
+        # Under an attack the claimed message is the forged one, so verification
+        # compares against that. This is what "the forgery passes verification"
+        # means: the verifier is not fooled about the signature, it is presented
+        # with a different message that the same signature validly signs.
+        if recovered_bit != forged_bit(bit, forge):
             mismatches.append(pos)
 
         # Track pair consumption.
