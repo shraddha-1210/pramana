@@ -238,3 +238,225 @@ def test_noise_parameters_outside_zero_to_one_are_rejected(
     """A probability outside [0, 1] is a specification error, not a clamp."""
     with pytest.raises(ValueError, match="must be in"):
         NoiseEngine(depolarizing_p=depolarizing_p, damping_gamma=damping_gamma)
+
+
+# --------------------------------------------------------------------------
+# LAYER 3 — Signing, verification, and probes.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def choi_spec():
+    """The Choi-fixed scheme, for testing (U,V)-type encryption."""
+    return load_example("choi_fixed_aqs")
+
+
+@pytest.fixture(scope="module")
+def witness_free_spec():
+    """The Pauli-witness-free scheme, for testing composite factors."""
+    return load_example("pauli_witness_free_aqs")
+
+
+@pytest.fixture(scope="module")
+def kim_spec():
+    """The Kim forgery-free scheme -- non-Clifford, cannot be signed."""
+    return load_example("kim_forgery_free_aqs")
+
+
+def test_signing_produces_a_valid_signature_that_verification_accepts(spec) -> None:
+    """V-42: every honestly signed message verifies on a noiseless channel.
+
+    10k rounds, exact. Any shortfall is a bug in the signing/verification path,
+    not sampling noise. This is the Layer 3 analogue of V-01.
+    """
+    from pramana.protocol.signing import run_protocol_rounds
+
+    results = run_protocol_rounds(spec, rounds=10_000, seed=42)
+
+    assert len(results.rounds) == 10_000
+    assert results.accept_rate == 1.0
+    assert all(r.accepted for r in results.rounds)
+
+
+def test_signing_with_uv_type_encryption_also_accepts(choi_spec) -> None:
+    """Signing with (I,H)-type encryption verifies on a noiseless channel.
+
+    Tests that the factor application and inversion are correct for a non-
+    trivial right factor.
+    """
+    from pramana.protocol.signing import run_protocol_rounds
+
+    results = run_protocol_rounds(choi_spec, rounds=1_000, seed=99)
+
+    assert results.accept_rate == 1.0
+
+
+def test_signing_with_composite_factor_also_accepts(witness_free_spec) -> None:
+    """Signing with [S, H] right factor verifies on a noiseless channel.
+
+    Tests that composite factor sequences are applied and inverted correctly.
+    """
+    from pramana.protocol.signing import run_protocol_rounds
+
+    results = run_protocol_rounds(witness_free_spec, rounds=1_000, seed=77)
+
+    assert results.accept_rate == 1.0
+
+
+def test_signing_twice_with_different_seeds_produces_different_signatures(spec) -> None:
+    """V-45: different seeds yield different corrections and pair indices.
+
+    What makes this true: each signing run consumes entangled pairs from a
+    monotonically advancing counter (V-36), and the Bell-measurement outcomes
+    come from a different RNG stream. The pair index alone is sufficient --
+    physics forbids reuse.
+    """
+    from pramana.protocol.signing import run_protocol_rounds
+
+    r1 = run_protocol_rounds(spec, rounds=10, seed=1)
+    r2 = run_protocol_rounds(spec, rounds=10, seed=2)
+
+    # Corrections should differ (different RNG streams).
+    corrections_1 = tuple(r.corrections for r in r1.rounds)
+    corrections_2 = tuple(r.corrections for r in r2.rounds)
+    assert corrections_1 != corrections_2, (
+        "two runs with different seeds produced identical corrections"
+    )
+
+    # Outcomes should differ.
+    outcomes_1 = tuple(r.outcomes for r in r1.rounds)
+    outcomes_2 = tuple(r.outcomes for r in r2.rounds)
+    assert outcomes_1 != outcomes_2, (
+        "two runs with different seeds produced identical outcomes"
+    )
+
+
+def test_probe_outcomes_match_expectation_with_probability_one(spec) -> None:
+    """V-44: honest probes match on a noiseless Clifford channel.
+
+    This is a correctness test only, not a calibration source. It will not
+    be passed to D2.
+    """
+    from pramana.protocol.signing import run_protocol_rounds
+
+    probe_key = b"test_probe_key_material_32_bytes!"
+    results = run_protocol_rounds(spec, rounds=200, seed=42, probe_key=probe_key)
+
+    probes = [r for r in results.rounds if r.is_probe]
+    assert len(probes) > 0, "no probes were scheduled"
+    assert len(probes) == min(spec.probes.rounds_per_signature, 200)
+
+    for r in probes:
+        assert r.probe_state is not None
+        assert r.probe_expected is not None
+        assert r.probe_observed is not None
+        assert r.probe_observed == r.probe_expected, (
+            f"probe at round {r.index} for state {r.probe_state}: "
+            f"expected {r.probe_expected}, got {r.probe_observed}"
+        )
+
+    assert results.probe_mismatch_rate == 0.0
+
+
+def test_probe_positions_are_unpredictable_without_key() -> None:
+    """V-43: probe schedule is a deterministic function of key material.
+
+    Given the probe schedule for one key, an attacker without the key
+    cannot predict it. Tested by checking that different keys produce
+    different schedules over many trials, and that the schedules are
+    deterministic (same key + same parameters = same schedule).
+    """
+    from pramana.protocol.probes import derive_probe_schedule
+
+    total = 500
+    count = 50
+
+    # Same key, same parameters -> same schedule.
+    key = b"shared_secret_key_for_probes_32b!"
+    s1 = derive_probe_schedule(key, total, count)
+    s2 = derive_probe_schedule(key, total, count)
+    assert s1 == s2, "same key produced different schedules"
+
+    # Different keys -> different schedules.
+    schedules: set[frozenset[int]] = set()
+    for i in range(100):
+        k = f"key_{i:04d}_________________________________".encode()[:32]
+        schedules.add(derive_probe_schedule(k, total, count))
+
+    # With 100 random keys and 50-of-500 positions, all 100 schedules should
+    # be distinct. The probability of a collision is negligible.
+    assert len(schedules) == 100, (
+        f"only {len(schedules)} distinct schedules from 100 different keys"
+    )
+
+
+def test_probe_schedule_count_is_exact() -> None:
+    """The schedule contains exactly the requested number of probes."""
+    from pramana.protocol.probes import derive_probe_schedule
+
+    key = b"test_key_for_count_checking_32b!"
+    for count in (0, 1, 10, 50, 100):
+        s = derive_probe_schedule(key, 100, count)
+        assert len(s) == count
+
+
+def test_probe_schedule_rejects_more_probes_than_rounds() -> None:
+    """Cannot schedule more probes than total rounds."""
+    from pramana.protocol.probes import derive_probe_schedule
+
+    with pytest.raises(ValueError, match="exceeds total_rounds"):
+        derive_probe_schedule(b"key", 10, 20)
+
+
+def test_non_clifford_scheme_refuses_to_sign(kim_spec) -> None:
+    """V-40 at Layer 3: a non-Clifford scheme cannot be signed.
+
+    kim_forgery_free_aqs declares W_kim_forgery_free, a non-Clifford
+    assistant unitary. The signing path cannot simulate it. Static analysis
+    (D1) still applies.
+    """
+    from pramana.protocol.signing import run_protocol_rounds
+
+    with pytest.raises(NotImplementedError, match="non-Clifford"):
+        run_protocol_rounds(kim_spec, rounds=1, seed=42)
+
+
+def test_three_rotation_scheme_refuses_to_sign() -> None:
+    """Q-14: a scheme with rotation_count >= 3 cannot be signed at Layer 3.
+
+    The rotation operators for 3+ rotations are not modelled: sigma_x and
+    sigma_z already generate the single-qubit Pauli group mod phase, so no
+    third independent Pauli rotation exists. Do not guess.
+    """
+    from pramana.protocol.signing import _reject_three_or_more_rotations
+
+    # kim_forgery_free_aqs has rotation_count=3, but also non-Clifford.
+    # Test the rotation check directly.
+    spec = load_example("kim_forgery_free_aqs")
+    with pytest.raises(NotImplementedError, match="rotation_count"):
+        _reject_three_or_more_rotations(spec)
+
+
+def test_non_probe_rounds_have_no_probe_fields(spec) -> None:
+    """Non-probe rounds do not populate probe fields."""
+    from pramana.protocol.signing import run_protocol_rounds
+
+    results = run_protocol_rounds(spec, rounds=10, seed=42)
+
+    for r in results.rounds:
+        assert r.is_probe is False
+        assert r.probe_state is None
+        assert r.probe_expected is None
+        assert r.probe_observed is None
+
+
+def test_all_rounds_consume_fresh_pairs_at_layer_3(spec) -> None:
+    """V-36 at Layer 3: pair indices are strictly increasing, never reused."""
+    from pramana.protocol.signing import run_protocol_rounds
+
+    results = run_protocol_rounds(spec, rounds=50, seed=3)
+    consumed = [i for r in results.rounds for i in r.pair_indices]
+
+    assert len(consumed) == len(set(consumed)), "pair index reused"
+    assert consumed == sorted(consumed), "pair indices not monotonically increasing"
+

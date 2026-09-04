@@ -34,6 +34,10 @@ class RoundResult:
             (D4) turns these into an exact freshness check.
         outcomes: Per-qubit Bell-measurement outcomes.
         corrections: Per-qubit Pauli correction applied by the receiver.
+        is_probe: Whether this round is a probe round.
+        probe_state: The Pauli eigenstate prepared for a probe round, or None.
+        probe_expected: The expected measurement bit for the probe, or None.
+        probe_observed: The observed measurement bit for the probe, or None.
     """
 
     index: int
@@ -42,15 +46,18 @@ class RoundResult:
     pair_indices: tuple[int, ...] = ()
     outcomes: tuple[tuple[int, int], ...] = ()
     corrections: tuple[str, ...] = ()
+    is_probe: bool = False
+    probe_state: str | None = None
+    probe_expected: int | None = None
+    probe_observed: int | None = None
 
 
 @dataclass(frozen=True)
 class RoundResults:
     """The result of running many rounds.
 
-    Probe fields are deliberately absent: probe rounds and their key-derived
-    expectations are Layer 3, and adding empty placeholders now would invite a
-    detector to read a field that means nothing yet.
+    Probe fields are populated by Layer 3. Layer 2 engine runs that do not
+    interleave probes leave them at their defaults (``is_probe=False``).
     """
 
     engine: str
@@ -64,10 +71,27 @@ class RoundResults:
             return 0.0
         return sum(1 for r in self.rounds if r.accepted) / len(self.rounds)
 
+    @property
+    def probe_mismatch_rate(self) -> float | None:
+        """Fraction of probe rounds whose observed bit differed from expected.
+
+        Returns None if no probe rounds exist, so a caller cannot mistake
+        "no probes" for "all probes matched".
+        """
+        probes = [r for r in self.rounds if r.is_probe]
+        if not probes:
+            return None
+        mismatches = sum(1 for r in probes if r.probe_observed != r.probe_expected)
+        return mismatches / len(probes)
+
     def fingerprint(self) -> tuple[object, ...]:
         """A hashable summary used to assert bit-identical reruns (Rule 6)."""
         return tuple(
-            (r.index, r.accepted, r.mismatch_positions, r.pair_indices, r.outcomes, r.corrections)
+            (
+                r.index, r.accepted, r.mismatch_positions, r.pair_indices,
+                r.outcomes, r.corrections,
+                r.is_probe, r.probe_state, r.probe_expected, r.probe_observed,
+            )
             for r in self.rounds
         )
 

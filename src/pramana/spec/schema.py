@@ -224,11 +224,22 @@ class Arbitrator(StrictModel):
 
 
 class Probes(StrictModel):
-    """Probe-round configuration."""
+    """Probe-round configuration.
+
+    ``p_min`` is the configured floor for D2's baseline probe-error rate ``p_0``.
+    It comes from the noise engine, never from the Clifford engine. The Clifford
+    engine asserts probability 1 — mathematically correct and operationally useless
+    as a detection baseline. These two roles must never be blurred.
+
+    ``p_min`` is declared here, in the scheme spec, with a documented default,
+    because a hidden floor invalidates the stated false-alarm rate. The assurance
+    report prints the value used.
+    """
 
     enabled: bool
     basis_set: Literal["six_state", "four_state"]
     rounds_per_signature: int = Field(ge=0)
+    p_min: float = Field(default=0.01, gt=0.0, lt=1.0)
 
 
 class Verification(StrictModel):
