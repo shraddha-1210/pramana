@@ -88,5 +88,5 @@ warn_unreachable = true
 
 [[tool.mypy.overrides]]
 # Neither ships type stubs.
-module = ["stim.*", "qiskit_aer.*"]
+module = ["stim.*", "qiskit.*", "qiskit_aer.*"]
 ignore_missing_imports = true
