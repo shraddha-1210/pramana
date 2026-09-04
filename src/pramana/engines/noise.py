@@ -35,6 +35,7 @@ from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel, amplitude_damping_error, depolarizing_error
 
 from pramana.engines.base import RoundResult, RoundResults
+from pramana.engines.clifford import _reject_non_clifford
 from pramana.protocol.teleportation import (
     CORRECTION_TABLE,
     PAULI_EIGENSTATES,
@@ -172,6 +173,7 @@ class NoiseEngine:
         state order the Clifford engine uses, so the two engines are comparable
         round for round even though their random streams are unrelated.
         """
+        _reject_non_clifford(spec)
         length = spec.signature.length_qubits
         pairs_per_qubit = spec.entanglement.pairs_per_signature_qubit
 

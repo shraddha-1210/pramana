@@ -16,6 +16,7 @@ Validation principles:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -23,13 +24,21 @@ import numpy as np
 import stim
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-from pramana.spec.kim_forgeability import is_forgeable, unitary_of
+from pramana.spec.kim_forgeability import (
+    W_KIM_FORGERY_FREE,
+    forging_witnesses_matrix,
+    is_forgeable,
+    unitary_of,
+)
 from pramana.spec.operators import (
+    BASE_SET,
     REGISTRY,
     NonCliffordOperatorError,
     compose,
     encryption_set,
     forging_witnesses,
+    name_of,
+    tableau_of,
 )
 
 STABILIZER_RANK_LIMITATION = (
@@ -77,6 +86,21 @@ class EqualityTest(StrEnum):
 
     SWAP = "swap"
     PROJECTIVE = "projective"
+
+
+@dataclass(frozen=True)
+class KimVerdict:
+    """A forgeable-message verdict, with the theorem that produced it.
+
+    The theorem is part of the verdict, not metadata: Theorem 1 and Theorem 4
+    cover different regimes, and a verdict is only auditable if it says which one
+    decided it.
+    """
+
+    forgeable: bool
+    theorem: str
+    witness_triple: tuple[int, int, int] | None
+    rationale: str
 
 
 class StrictModel(BaseModel):
@@ -229,7 +253,9 @@ class SchemeSpec(StrictModel):
     entanglement: Entanglement
     signature: Signature
     rotation: OperatorBlock
+    rotation_count: int = Field(ge=1)
     signing_encryption: OperatorBlock
+    assistant_unitary: str | None = None
     classical_outcomes: ClassicalOutcomes
     binding: Binding
     arbitrator: Arbitrator
@@ -268,28 +294,72 @@ class SchemeSpec(StrictModel):
             )
         return self
 
-    def forging_witnesses(self) -> tuple[stim.Tableau, ...]:
-        """Non-trivial operators that make Choi-class existential forgery succeed.
+    @field_validator("assistant_unitary")
+    @classmethod
+    def _assistant_is_a_registry_name(cls, value: str | None) -> str | None:
+        """The assistant unitary is a registry name, never a free-form string.
 
-        The D1 predicate of ``docs/derivations.md`` section 5.3. This decides the
-        **universal-Pauli-commutant class** only. Empty means not vulnerable *to
-        that class*, which is strictly weaker than secure -- see
-        ``kim_forgeable``, which is necessary and sufficient and catches schemes
-        this search clears.
+        Unlike a factor it *may* be non-Clifford: D1 is static and never
+        simulates, so a non-Clifford assistant is auditable even though it cannot
+        run on the Clifford engine.
         """
-        return forging_witnesses(
-            self.signing_encryption.operator_set(), self.rotation.operator_set()
-        )
+        if value is not None and value not in REGISTRY:
+            raise ValueError(
+                f"unknown assistant_unitary {value!r}. Admissible operators are "
+                f"{', '.join(REGISTRY)}. Operator names are not free-form; extend "
+                f"pramana.spec.operators.REGISTRY to add one."
+            )
+        return value
 
-    def assistant_unitary(self) -> np.ndarray:
-        """The single assistant unitary adjoined to the Pauli encryption set.
+    @model_validator(mode="after")
+    def _assistant_and_factors_are_alternatives(self) -> SchemeSpec:
+        """A scheme declares its assistant one way or the other, never both.
+
+        ``signing_encryption`` factors and ``assistant_unitary`` are two ways of
+        naming the same operator. Allowing both would create two sources of truth
+        for what D1 audits -- the failure the ``family`` invariant exists to
+        prevent (Q-9).
+        """
+        if (
+            self.assistant_unitary is not None
+            and not self.signing_encryption.is_identity_sandwich()
+        ):
+            raise ValueError(
+                f"assistant_unitary {self.assistant_unitary!r} is declared, but "
+                f"signing_encryption also carries non-identity factors "
+                f"(left={self.signing_encryption.left_factor}, "
+                f"right={self.signing_encryption.right_factor}). These are two ways "
+                "of naming the same operator; declare exactly one of them."
+            )
+        return self
+
+    def is_clifford_simulable(self) -> bool:
+        """Whether the runtime engines can simulate this scheme.
+
+        False when the scheme declares a non-Clifford assistant unitary. Such a
+        scheme is still fully **auditable**: D1 is static, reads four real
+        coefficients and never simulates. The restriction constrains the runtime
+        layers only, and it is a scope fact (ledger V-27), not a defect.
+        """
+        return self.assistant_unitary is None or REGISTRY[self.assistant_unitary].is_clifford
+
+    def assistant_matrix(self) -> np.ndarray:
+        """The single assistant unitary this scheme adjoins to the Pauli set.
+
+        Taken from the declared ``assistant_unitary`` when present, otherwise
+        composed from the signing-encryption factors.
 
         Raises:
             NotImplementedError: Both factors are non-identity. Kim's Theorem 4 is
                 stated for a single assistant unitary; which composite plays that
                 role in a two-sided sandwich is not derived in any source we have
-                read, and is not going to be guessed here (Rule 1).
+                read, and is not guessed here (Rule 1).
         """
+        if self.assistant_unitary is not None:
+            if self.assistant_unitary == "W_kim_forgery_free":
+                return W_KIM_FORGERY_FREE
+            return unitary_of(tableau_of(self.assistant_unitary))
+
         left = compose(self.signing_encryption.left_factor)
         right = compose(self.signing_encryption.right_factor)
         identity = stim.Tableau(1)
@@ -301,18 +371,97 @@ class SchemeSpec(StrictModel):
             )
         return unitary_of(left * right)
 
-    def kim_forgeable(self) -> tuple[bool, tuple[int, int, int] | None]:
-        """Whether a forgeable quantum message exists. Kim Theorem 4.
+    def encryption_matrices(self) -> tuple[np.ndarray, ...]:
+        """The encryption operator set as matrices: ``P * assistant`` for each Pauli."""
+        assistant = self.assistant_matrix()
+        return tuple(unitary_of(tableau_of(p)) @ assistant for p in BASE_SET)
 
-        Necessary and sufficient, and therefore the stronger of the two checks.
-        Returns the ``(l, m, n)`` membership witness for ``W_lmn`` when forgeable.
+    def rotation_matrices(self) -> tuple[np.ndarray, ...]:
+        """The rotation operator set as matrices."""
+        return tuple(unitary_of(t) for t in self.rotation.operator_set())
 
-        Note this addresses the assistant unitary only. Kim's Theorem 1 makes any
-        scheme with just two random rotations forgeable whatever the assistant
-        unitary is, and every example bundled with this project has two -- so a
-        ``False`` here would still not mean the scheme is safe.
+    def forging_witnesses(self) -> tuple[str, ...]:
+        """Non-trivial operators that make Choi-class existential forgery succeed.
+
+        The D1 predicate of ``docs/derivations.md`` section 5.3. It decides the
+        **universal-Pauli-commutant class** only. Empty means not vulnerable *to
+        that class*, which is strictly weaker than secure -- see ``kim_verdict``,
+        which is necessary and sufficient and catches schemes this search clears.
+
+        Two code paths, and which one ran matters for how the result is reported:
+
+        * Clifford scheme -> exact tableau search, no tolerance.
+        * Declared non-Clifford assistant -> matrix search against a tolerance,
+          because a non-Clifford operator has no tableau. Numerically decided, not
+          exactly decided. Ledger V-37.
+
+        Returns:
+            Registry names of the witnesses, sorted.
         """
-        return is_forgeable(self.assistant_unitary())
+        if self.is_clifford_simulable():
+            witnesses = forging_witnesses(
+                self.signing_encryption.operator_set(), self.rotation.operator_set()
+            )
+            return tuple(sorted(name_of(q) for q in witnesses))
+        return forging_witnesses_matrix(self.encryption_matrices(), self.rotation_matrices())
+
+    def kim_verdict(self) -> KimVerdict:
+        """Whether a forgeable quantum message exists. Kim, Lee & Lee (2018).
+
+        **Branches on the number of random rotations**, because the two theorems
+        cover different regimes and applying the wrong one gives the right answer
+        for the wrong reason:
+
+        * ``rotation_count == 2`` -> **Theorem 1**. A forgeable message exists for
+          *any* assistant unitary, unconditionally. The alpha/beta/gamma condition
+          is not evaluated, because it does not decide this case.
+        * ``rotation_count >= 3`` -> **Theorem 4**. The alpha/beta/gamma condition
+          is necessary and sufficient.
+
+        Raises:
+            NotImplementedError: ``rotation_count`` is 1. Neither theorem we have
+                read covers a single rotation, and the answer is not guessed.
+        """
+        if self.rotation_count < 2:
+            raise NotImplementedError(
+                f"rotation_count is {self.rotation_count}. Kim Theorem 1 covers two "
+                "random rotations and Theorem 4 covers three or more; neither covers "
+                "one. Required source: a treatment of the single-rotation case. Not "
+                "guessed here."
+            )
+        if self.rotation_count == 2:
+            return KimVerdict(
+                forgeable=True,
+                theorem="Theorem 1",
+                witness_triple=None,
+                rationale=(
+                    "Two random rotations: a forgeable quantum message exists for any "
+                    "assistant unitary, unconditionally. The assistant unitary is not "
+                    "examined, because it cannot change the answer."
+                ),
+            )
+
+        forgeable, triple = is_forgeable(self.assistant_matrix())
+        if forgeable:
+            rationale = (
+                f"Three or more random rotations, so Theorem 4 decides. The product "
+                f"alpha_l*beta_m*gamma_n vanishes for (l, m, n) = {triple}, placing the "
+                f"assistant unitary in W_{triple[0]}{triple[1]}{triple[2]}."
+                if triple
+                else "Theorem 4 condition satisfied."
+            )
+        else:
+            rationale = (
+                "Three or more random rotations, so Theorem 4 decides. No product "
+                "alpha_l*beta_m*gamma_n vanishes, so no forgeable quantum message "
+                "exists for this assistant unitary."
+            )
+        return KimVerdict(
+            forgeable=forgeable,
+            theorem="Theorem 4",
+            witness_triple=triple,
+            rationale=rationale,
+        )
 
 
 __all__ = [

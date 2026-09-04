@@ -185,3 +185,61 @@ def unitary_of(tableau: stim.Tableau) -> np.ndarray:
     # stim returns complex64; widen so downstream arithmetic is double precision.
     # The single-precision error in the *input* is what sets ZERO_TOLERANCE.
     return np.asarray(tableau.to_unitary_matrix(endian="little"), dtype=complex)
+
+
+def commutes_up_to_phase_matrix(
+    a: np.ndarray, b: np.ndarray, *, tolerance: float = ZERO_TOLERANCE
+) -> bool:
+    """Whether ``AB = lambda BA`` for some unit scalar, decided on matrices.
+
+    The matrix counterpart of ``operators.commutes_up_to_phase``. Needed only when
+    an operator has no tableau -- that is, when the scheme declares a non-Clifford
+    assistant unitary. **It is not exact**: unlike the tableau path it compares
+    floating-point matrices against ``tolerance``. Every verdict computed this way
+    must be reported as numerically decided, not exactly decided.
+    """
+    ab = a @ b
+    ba = b @ a
+    index = np.unravel_index(int(np.argmax(np.abs(ba))), ba.shape)
+    if abs(ba[index]) < tolerance:
+        return bool(np.allclose(ab, 0, atol=tolerance))
+    scale = ab[index] / ba[index]
+    return bool(np.allclose(ab, scale * ba, atol=tolerance) and abs(abs(scale) - 1) < tolerance)
+
+
+def forging_witnesses_matrix(
+    encryption: tuple[np.ndarray, ...],
+    rotation: tuple[np.ndarray, ...],
+    *,
+    tolerance: float = ZERO_TOLERANCE,
+) -> tuple[str, ...]:
+    """The Pauli-witness search, run on matrices instead of tableaus.
+
+    Same predicate as ``operators.forging_witnesses`` -- a non-trivial Q commuting
+    up to global phase with every encryption and rotation operator -- but usable
+    when the encryption set contains a non-Clifford operator and therefore has no
+    tableau representation.
+
+    The candidate Q still ranges over the 24 elements of C_1/U(1): a forging
+    operator outside the Clifford group remains out of scope (ledger V-09).
+
+    Returns:
+        Registry names of the witnesses, sorted.
+    """
+    from pramana.spec.operators import clifford_group, name_of
+
+    identity = np.eye(2, dtype=complex)
+    operators = list(encryption) + list(rotation)
+    found: list[str] = []
+    for tableau in clifford_group():
+        candidate = unitary_of(tableau)
+        if commutes_up_to_phase_matrix(candidate, identity, tolerance=tolerance) and np.allclose(
+            candidate
+            / candidate[np.unravel_index(int(np.argmax(np.abs(candidate))), candidate.shape)],
+            identity,
+            atol=tolerance,
+        ):
+            continue  # the identity is trivial by definition
+        if all(commutes_up_to_phase_matrix(candidate, op, tolerance=tolerance) for op in operators):
+            found.append(name_of(tableau))
+    return tuple(sorted(found))

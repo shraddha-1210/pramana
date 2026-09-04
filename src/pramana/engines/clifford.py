@@ -33,6 +33,26 @@ from pramana.spec.schema import SchemeSpec
 _STATE_CYCLE: tuple[str, ...] = tuple(PAULI_EIGENSTATES)
 
 
+def _reject_non_clifford(spec: SchemeSpec) -> None:
+    """Refuse to simulate a scheme whose assistant unitary is non-Clifford.
+
+    This is a scope boundary, not a defect: such a scheme is still fully
+    auditable, because D1 is static and never simulates. Every element of
+    C_1/U(1) is forgeable under Kim Theorem 4, so a forgery-free assistant
+    unitary is *necessarily* non-Clifford (ledger V-27) -- the schemes worth
+    reaching for are exactly the ones the stabilizer engines cannot run.
+    """
+    if not spec.is_clifford_simulable():
+        raise NotImplementedError(
+            f"scheme {spec.name!r} declares the non-Clifford assistant unitary "
+            f"{spec.assistant_unitary!r}, which has no stabilizer tableau and cannot "
+            "be simulated by a Clifford or density-matrix engine at this scale. "
+            "Static analysis (D1) still applies and is unaffected. Simulating it "
+            "would need stabilizer-rank simulation, which this project documents "
+            "and deliberately does not build."
+        )
+
+
 class CliffordEngine:
     """Exact stabilizer simulation of honest signing rounds."""
 
@@ -50,6 +70,7 @@ class CliffordEngine:
         rotation, encryption, the classical outcome string, the equality test --
         are Layer 3 and build on top of it.
         """
+        _reject_non_clifford(spec)
         length = spec.signature.length_qubits
         pairs_per_qubit = spec.entanglement.pairs_per_signature_qubit
 

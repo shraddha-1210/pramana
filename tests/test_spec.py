@@ -12,9 +12,12 @@ import numpy as np
 import pytest
 import stim
 
+from pramana.engines.clifford import CliffordEngine
+from pramana.engines.noise import NoiseEngine
 from pramana.spec.kim_forgeability import (
     W_KIM_FORGERY_FREE,
     ZERO_TOLERANCE,
+    forging_witnesses_matrix,
     is_forgeable,
     smallest_nonzero_term,
     su2_components,
@@ -32,7 +35,6 @@ from pramana.spec.operators import (
     compose,
     encryption_set,
     forging_witnesses,
-    name_of,
     tableau_of,
 )
 from pramana.spec.schema import (
@@ -150,7 +152,7 @@ def test_baseline_has_three_witnesses_being_the_non_identity_paulis() -> None:
     spec = load_example("baseline_bell_aqs")
     witnesses = spec.forging_witnesses()
     assert len(witnesses) == 3
-    assert sorted(name_of(q) for q in witnesses) == ["X", "Y", "Z"]
+    assert list(witnesses) == ["X", "Y", "Z"]
 
 
 def test_choi_fixed_still_has_exactly_one_witness_and_it_is_y() -> None:
@@ -167,8 +169,7 @@ def test_choi_fixed_still_has_exactly_one_witness_and_it_is_y() -> None:
     spec = load_example("choi_fixed_aqs")
     witnesses = spec.forging_witnesses()
     assert len(witnesses) == 1
-    assert name_of(witnesses[0]) == "Y"
-    assert witnesses[0] == tableau_of("Y")
+    assert witnesses == ("Y",)
 
 
 def test_pauli_witness_free_scheme_has_no_pauli_witnesses() -> None:
@@ -208,6 +209,7 @@ def test_witness_counts_across_all_three_examples() -> None:
     assert counts == {
         "baseline_bell_aqs": 3,
         "choi_fixed_aqs": 1,
+        "kim_forgery_free_aqs": 0,
         "pauli_witness_free_aqs": 0,
     }
 
@@ -219,14 +221,22 @@ def test_witness_counts_across_all_three_examples() -> None:
 
 def test_all_three_examples_are_present_and_load() -> None:
     """The exit gate: every bundled example parses and validates."""
-    assert example_names() == ["baseline_bell_aqs", "choi_fixed_aqs", "pauli_witness_free_aqs"]
+    assert example_names() == [
+        "baseline_bell_aqs",
+        "choi_fixed_aqs",
+        "kim_forgery_free_aqs",
+        "pauli_witness_free_aqs",
+    ]
     for name in example_names():
         spec = load_example(name)
         assert isinstance(spec, SchemeSpec)
         assert spec.name == name
 
 
-@pytest.mark.parametrize("name", ["baseline_bell_aqs", "choi_fixed_aqs", "pauli_witness_free_aqs"])
+@pytest.mark.parametrize(
+    "name",
+    ["baseline_bell_aqs", "choi_fixed_aqs", "pauli_witness_free_aqs", "kim_forgery_free_aqs"],
+)
 def test_every_field_round_trips(name: str) -> None:
     """Dumping and reloading a spec yields an identical model."""
     spec = load_example(name)
@@ -475,15 +485,25 @@ def test_pauli_witness_free_scheme_is_still_forgeable() -> None:
     """
     spec = load_example("pauli_witness_free_aqs")
     assert spec.forging_witnesses() == ()
-    forgeable, triple = spec.kim_forgeable()
-    assert forgeable is True
-    assert triple is not None
+    verdict = spec.kim_verdict()
+    assert verdict.forgeable is True
+    # Two rotations, so Theorem 1 decides unconditionally and the alpha/beta/gamma
+    # condition is never reached. Ledger Q-11.
+    assert verdict.theorem == "Theorem 1"
+    assert verdict.witness_triple is None
 
 
 @pytest.mark.parametrize("name", ["baseline_bell_aqs", "choi_fixed_aqs", "pauli_witness_free_aqs"])
-def test_every_example_scheme_is_forgeable_under_theorem_4(name: str) -> None:
-    """All three bundled schemes are forgeable. None may be presented as secure."""
-    assert load_example(name).kim_forgeable()[0] is True
+def test_the_two_rotation_schemes_are_forgeable_by_theorem_1(name: str) -> None:
+    """All three two-rotation schemes are forgeable; none may be called secure.
+
+    Theorem 1 decides them unconditionally: with two random rotations a forgeable
+    message exists for *any* assistant unitary, so no choice of encryption factor
+    can rescue them. Ledger Q-11.
+    """
+    verdict = load_example(name).kim_verdict()
+    assert verdict.forgeable is True
+    assert verdict.theorem == "Theorem 1"
 
 
 def test_every_clifford_element_is_forgeable() -> None:
@@ -552,7 +572,7 @@ def test_two_sided_sandwich_raises_rather_than_guessing() -> None:
     assistant unitary in any source read so far, so the criterion refuses to
     apply itself rather than inventing a convention.
     """
-    spec_dict = _spec_dict()
+    spec_dict = _spec_dict(rotation_count=3)  # 3+, so Theorem 4 must consult it
     spec_dict["signing_encryption"] = {
         "family": "uv_type",
         "left_factor": ["H"],
@@ -560,4 +580,193 @@ def test_two_sided_sandwich_raises_rather_than_guessing() -> None:
     }
     spec = load_spec_text(_as_yaml(spec_dict))
     with pytest.raises(NotImplementedError, match="single assistant unitary"):
-        spec.kim_forgeable()
+        spec.kim_verdict()
+
+
+# --------------------------------------------------------------------------
+# Q-11: the Kim check branches on rotation count, not on the assistant alone.
+# --------------------------------------------------------------------------
+
+
+def test_two_rotations_are_decided_by_theorem_1_without_touching_the_assistant() -> None:
+    """Two rotations: Theorem 1 decides, and alpha/beta/gamma is never evaluated.
+
+    The bug this guards against is subtle and was live in an earlier build: the
+    two-rotation schemes reported ``W_123`` from Theorem 4, which is the right
+    answer produced by a theorem that does not govern the case. Theorem 4 is
+    stated for three or more rotations.
+    """
+    verdict = load_example("baseline_bell_aqs").kim_verdict()
+
+    assert verdict.forgeable is True
+    assert verdict.theorem == "Theorem 1"
+    assert verdict.witness_triple is None, (
+        "a W_lmn membership triple was reported for a two-rotation scheme; that "
+        "triple can only come from Theorem 4, which does not govern this case"
+    )
+    assert "any" in verdict.rationale
+
+
+def test_theorem_1_holds_whatever_the_assistant_unitary_is() -> None:
+    """With two rotations the assistant cannot change the verdict.
+
+    Even Kim's forgery-free operator -- the one assistant known to clear
+    Theorem 4 -- leaves a two-rotation scheme forgeable. That is precisely what
+    Theorem 1 says, and it is why the branch matters.
+    """
+    spec_dict = _spec_dict(rotation_count=2, assistant_unitary="W_kim_forgery_free")
+    spec = load_spec_text(_as_yaml(spec_dict))
+
+    verdict = spec.kim_verdict()
+    assert verdict.forgeable is True
+    assert verdict.theorem == "Theorem 1"
+
+
+def test_three_rotations_are_decided_by_theorem_4() -> None:
+    """Three or more rotations put the scheme in Theorem 4's regime."""
+    verdict = load_example("kim_forgery_free_aqs").kim_verdict()
+
+    assert verdict.theorem == "Theorem 4"
+    assert verdict.forgeable is False
+    assert verdict.witness_triple is None
+
+
+def test_three_rotations_with_a_forgeable_assistant_still_report_theorem_4() -> None:
+    """Theorem 4 can return either verdict; the branch is on count, not outcome."""
+    spec_dict = _spec_dict(rotation_count=3)  # Pauli assistant: alpha vanishes
+    verdict = load_spec_text(_as_yaml(spec_dict)).kim_verdict()
+
+    assert verdict.theorem == "Theorem 4"
+    assert verdict.forgeable is True
+    assert verdict.witness_triple is not None
+
+
+def test_a_single_rotation_raises_rather_than_guessing() -> None:
+    """Rule 1: neither theorem we have read covers one rotation."""
+    spec = load_spec_text(_as_yaml(_spec_dict(rotation_count=1)))
+    with pytest.raises(NotImplementedError, match="neither covers"):
+        spec.kim_verdict()
+
+
+def test_rotation_count_is_a_positive_integer() -> None:
+    """A count, not a category: the field carries the actual number."""
+    assert load_example("baseline_bell_aqs").rotation_count == 2
+    assert load_example("kim_forgery_free_aqs").rotation_count == 3
+    with pytest.raises(SpecError):
+        load_spec_text(_as_yaml(_spec_dict(rotation_count=0)))
+    with pytest.raises(SpecError):
+        load_spec_text(_as_yaml(_spec_dict(rotation_count="3")))
+
+
+# --------------------------------------------------------------------------
+# Q-12: the fourth example, and non-Clifford assistants.
+# --------------------------------------------------------------------------
+
+
+def test_kim_forgery_free_scheme_clears_both_criteria() -> None:
+    """The one bundled scheme with no forgeable message. Kim Corollary 5.
+
+    Zero Pauli witnesses *and* not forgeable under Theorem 4 -- the second is the
+    load-bearing half, since zero Pauli witnesses alone is what
+    ``pauli_witness_free_aqs`` has and it is forgeable.
+    """
+    spec = load_example("kim_forgery_free_aqs")
+
+    assert spec.forging_witnesses() == ()
+    verdict = spec.kim_verdict()
+    assert verdict.forgeable is False
+    assert verdict.theorem == "Theorem 4"
+
+
+def test_kim_forgery_free_scheme_is_auditable_but_not_simulable() -> None:
+    """Both halves of its status, stated together. Ledger V-27.
+
+    Static audit clears; runtime simulation is out of scope because the assistant
+    unitary is non-Clifford. That is a scope fact, not a defect -- every element
+    of the Clifford group is forgeable, so a forgery-free assistant is
+    *necessarily* non-Clifford.
+    """
+    spec = load_example("kim_forgery_free_aqs")
+
+    # Auditable: the static path runs and returns a verdict.
+    assert spec.is_clifford_simulable() is False
+    assert spec.kim_verdict().forgeable is False
+
+    # Not simulable: both engines refuse, naming the reason.
+    for engine in (CliffordEngine(), NoiseEngine()):
+        with pytest.raises(NotImplementedError, match="non-Clifford assistant unitary"):
+            engine.run_rounds(spec, rounds=1, seed=0)
+
+
+def test_clifford_schemes_remain_simulable() -> None:
+    """The guard is specific: it must not refuse the schemes that can run."""
+    for name in ("baseline_bell_aqs", "choi_fixed_aqs", "pauli_witness_free_aqs"):
+        spec = load_example(name)
+        assert spec.is_clifford_simulable() is True
+        assert CliffordEngine().run_rounds(spec, rounds=2, seed=0).accept_rate == 1.0
+
+
+def test_assistant_unitary_must_be_a_registry_name() -> None:
+    """Not free-form, exactly like the factors."""
+    with pytest.raises(SpecError, match="unknown assistant_unitary"):
+        load_spec_text(_as_yaml(_spec_dict(assistant_unitary="W_made_up")))
+
+
+def test_assistant_unitary_and_non_identity_factors_are_mutually_exclusive() -> None:
+    """Two ways of naming one operator would be two sources of truth (Q-9)."""
+    spec_dict = _spec_dict(assistant_unitary="H")
+    spec_dict["signing_encryption"] = {
+        "family": "uv_type",
+        "left_factor": ["I"],
+        "right_factor": ["H"],
+    }
+    with pytest.raises(SpecError, match="two ways of naming the same operator"):
+        load_spec_text(_as_yaml(spec_dict))
+
+
+def test_matrix_and_tableau_witness_searches_agree_on_clifford_schemes() -> None:
+    """Cross-validate the two code paths where both are usable.
+
+    The non-Clifford case can only be decided on matrices, against a tolerance.
+    That path is trusted only because it reproduces the exact tableau path
+    wherever the exact path also applies. Ledger V-37.
+    """
+    paulis = tuple(unitary_of(tableau_of(p)) for p in BASE_SET)
+    for name in ("baseline_bell_aqs", "choi_fixed_aqs", "pauli_witness_free_aqs"):
+        spec = load_example(name)
+        exact = spec.forging_witnesses()  # tableau path
+        numeric = forging_witnesses_matrix(spec.encryption_matrices(), paulis)
+        assert exact == numeric, f"{name}: exact {exact} != numeric {numeric}"
+
+
+# --------------------------------------------------------------------------
+# Q-13: both decision-table axes are reachable.
+# --------------------------------------------------------------------------
+
+
+def test_static_axis_reaches_a_not_forgeable_verdict() -> None:
+    """The static axis is not stuck at "vulnerable".
+
+    Before ``kim_forgery_free_aqs`` existed, every bundled scheme was forgeable
+    and the static axis could never produce a clean verdict, which would have
+    left a decision-table outcome unreachable by construction. Ledger Q-13.
+    """
+    verdicts = {name: load_example(name).kim_verdict().forgeable for name in example_names()}
+
+    assert any(v is False for v in verdicts.values()), verdicts
+    assert any(v is True for v in verdicts.values()), verdicts
+    assert verdicts["kim_forgery_free_aqs"] is False
+
+
+def test_runtime_axis_reaches_a_clean_run() -> None:
+    """Honest traffic produces nothing for a runtime detector to fire on.
+
+    This is the *input* that will map to ``AttackClass.NONE`` at Layer 7: every
+    round accepted, no mismatch anywhere. The decision table itself does not
+    exist yet, so this asserts the input is reachable, not the mapping.
+    """
+    spec = load_example("baseline_bell_aqs")
+    results = CliffordEngine().run_rounds(spec, rounds=200, seed=5)
+
+    assert results.accept_rate == 1.0
+    assert all(r.mismatch_positions == () for r in results.rounds)

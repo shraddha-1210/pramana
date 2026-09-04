@@ -47,6 +47,12 @@ rotation:
   left_factor: [I]
   right_factor: [I]
 
+# Two random rotations: R_0 = sigma_x, R_1 = sigma_z (Choi section II, step B2).
+# Kim Theorem 1 governs this regime -- a forgeable message exists for ANY assistant
+# unitary, so the alpha/beta/gamma condition of Theorem 4 does not apply and is not
+# evaluated. Theorem 4 is stated for three or more rotations.
+rotation_count: 2
+
 # (I, S*H)-type. Factors compose left to right: [S, H] denotes the product S*H.
 signing_encryption:
   family: uv_type
